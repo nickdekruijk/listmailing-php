@@ -1,0 +1,65 @@
+{
+    "name": "nickdekruijk/listmailing-php",
+    "description": "Client for the ListMailing sign-up API, with an optional Laravel layer: config, facade, a queued job that retries safely and a fake for tests",
+    "license": "MIT",
+    "keywords": [
+        "listmailing",
+        "newsletter",
+        "sign-up",
+        "double opt-in",
+        "api",
+        "laravel"
+    ],
+    "authors": [
+        {
+            "name": "Nick de Kruijk",
+            "email": "git@nickdekruijk.nl"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "composer-runtime-api": "^2.0",
+        "guzzlehttp/guzzle": "^7.8"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.18",
+        "orchestra/testbench": "^10.0|^11.0",
+        "pestphp/pest": "^4.1|^5.0"
+    },
+    "suggest": {
+        "laravel/framework": "For the Laravel layer: config, facade, the queued SubscribeToList job and the fake (^12.0|^13.0)"
+    },
+    "autoload": {
+        "psr-4": {
+            "NickDeKruijk\\ListMailing\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "NickDeKruijk\\ListMailing\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/pest",
+        "types:check": "phpstan analyse --memory-limit=1G"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "NickDeKruijk\\ListMailing\\Laravel\\ServiceProvider"
+            ],
+            "aliases": {
+                "ListMailing": "NickDeKruijk\\ListMailing\\Laravel\\ListMailing"
+            }
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
