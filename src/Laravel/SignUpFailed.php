@@ -6,10 +6,11 @@ use NickDeKruijk\ListMailing\Subscription;
 use Throwable;
 
 /**
- * Fired by SubscribeToList when it gives up: an error that will not go away
- * by trying again (a revoked token, a list the token may not use, a wrong
- * field, a missing token or list id), or a retryable one past the retry
- * period. Not fired when the job is only released to try again later.
+ * Fired by SubscribeToList when it fails for good: an error that will not
+ * go away by trying again (a revoked token, a list the token may not use, a
+ * wrong field, a missing token or list id), a retryable one past the retry
+ * period, or a failure of the worker itself, such as a timeout. Fired once
+ * per job, not when the job is only released to try again later.
  */
 class SignUpFailed
 {

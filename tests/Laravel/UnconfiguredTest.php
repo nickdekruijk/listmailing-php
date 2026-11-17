@@ -16,6 +16,7 @@ it('fails the job without a token instead of breaking the request', function () 
     SubscribeToList::dispatchSync(new Subscription('anna@example.com', reference: 'B-1'));
 
     Exceptions::assertReported(fn (InvalidArgumentException $e) => str_contains($e->getMessage(), 'token'));
+    Event::assertDispatchedTimes(SignUpFailed::class, 1);
     Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->exception instanceof InvalidArgumentException);
     Event::assertDispatched(JobFailed::class, fn (JobFailed $event) => $event->exception instanceof InvalidArgumentException);
 });

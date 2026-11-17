@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Queue;
@@ -203,11 +204,12 @@ it('keeps retrying after a delay for the full period', function () {
     $now->assertFailedWith(DailyLimitReached::class);
 });
 
-it('fires SignUpFailed when it gives up', function (Throwable $failure) {
+it('fires SignUpFailed once when it gives up', function (Throwable $failure) {
     $this->fake->respondWith($failure);
 
-    run(new SubscribeToList(booking(), 'list-9'));
+    SubscribeToList::dispatchSync(booking(), 'list-9');
 
+    Event::assertDispatchedTimes(SignUpFailed::class, 1);
     Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->exception === $failure
         && $event->listId === 'list-9'
         && $event->subscription->email === 'anna@example.com');
@@ -220,18 +222,37 @@ it('fires SignUpFailed when it gives up', function (Throwable $failure) {
 it('fires SignUpFailed without a list', function () {
     config(['listmailing.list' => null]);
 
-    run(new SubscribeToList(booking()));
+    SubscribeToList::dispatchSync(booking());
 
+    Event::assertDispatchedTimes(SignUpFailed::class, 1);
     Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->listId === null
         && $event->exception instanceof InvalidArgumentException);
+});
+
+it('fires SignUpFailed once when the worker gives up on the job', function () {
+    $exception = new MaxAttemptsExceededException('SubscribeToList has been attempted too many times.');
+
+    (new SubscribeToList(booking(), 'list-9'))->failed($exception);
+
+    Event::assertDispatchedTimes(SignUpFailed::class, 1);
+    Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->exception === $exception
+        && $event->listId === 'list-9');
+    $this->fake->assertNothingSubscribed();
+});
+
+it('fires SignUpFailed with a reason when failed without one', function () {
+    (new SubscribeToList(booking()))->failed();
+
+    Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->exception instanceof RuntimeException);
 });
 
 it('fires no SignUpFailed on a release or a success', function () {
     $this->fake->respondWith(new ConnectionFailed('Timed out.'));
 
-    run(new SubscribeToList(booking()));
-    run(new SubscribeToList(booking()));
+    SubscribeToList::dispatchSync(booking());
+    SubscribeToList::dispatchSync(booking());
 
+    $this->fake->assertSubscribedTimes(2);
     Event::assertNotDispatched(SignUpFailed::class);
 });
 

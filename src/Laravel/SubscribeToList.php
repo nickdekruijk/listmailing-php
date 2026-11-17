@@ -15,6 +15,7 @@ use NickDeKruijk\ListMailing\Confirmation;
 use NickDeKruijk\ListMailing\Exceptions\ListMailingException;
 use NickDeKruijk\ListMailing\Exceptions\Retryable;
 use NickDeKruijk\ListMailing\Subscription;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -159,15 +160,24 @@ class SubscribeToList implements ShouldQueueAfterCommit
     }
 
     /**
-     * Report the error, so it reaches the error tracker, tell the site, and
-     * fail without a retry. Nothing is thrown, so a sync queue does not break
-     * the request.
+     * Called by Laravel whenever the job fails: through failWith(), but also
+     * when the worker gives up on it, after a timeout or once retryUntil()
+     * has passed while the job waited in the queue. So SignUpFailed is fired
+     * here, once, and not in failWith().
+     */
+    public function failed(?Throwable $e = null): void
+    {
+        event(new SignUpFailed($this->subscription, $this->listId, $e ?? new RuntimeException('SubscribeToList failed without a reason.')));
+    }
+
+    /**
+     * Report the error, so it reaches the error tracker, and fail without a
+     * retry, which calls failed(). Nothing is thrown, so a sync queue does not
+     * break the request.
      */
     private function failWith(Throwable $e): void
     {
         report($e);
-
-        event(new SignUpFailed($this->subscription, $this->listId, $e));
 
         $this->fail($e);
     }

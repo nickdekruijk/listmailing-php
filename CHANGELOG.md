@@ -17,4 +17,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConnectionFailed` leaves the email address of a status lookup out of its message, and does not keep the Guzzle exception, whose message holds the full URL.
 - Laravel layer, auto-discovered: config from `.env`, the `ListMailing` facade with `ListMailing::configured()`, and `ListMailing::fake()` with asserts for the tests of a site.
 - The queued `SubscribeToList` job. It retries timeouts, 5xx and 429 after `Retry-After` with an Idempotency-Key fixed at dispatch, for 48 hours counted from the moment it becomes available, so after a delay. Any other error, a missing token or list id included, is reported and fails the job; it never throws, also on the sync queue.
-- The `SignUpProcessed` event after every successful answer and `SignUpFailed` when the job gives up.
+- The `SignUpProcessed` event after every successful answer, and `SignUpFailed` once when the job fails for good, fired from the job's `failed()` so a timeout or an expired retry period on the worker counts too.

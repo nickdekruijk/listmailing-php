@@ -170,7 +170,7 @@ SubscribeToList::dispatch($subscription, 'another-list-id');
 The job fires two events, so your site can keep track:
 
 - `NickDeKruijk\ListMailing\Laravel\SignUpProcessed` after every successful answer, with `subscription`, `listId` and `result`. Also for `Suppressed`, see [A blocked address](#a-blocked-address).
-- `NickDeKruijk\ListMailing\Laravel\SignUpFailed` when the job gives up, with `subscription`, `listId` (null when none was set) and `exception`. Not when it only waits to try again.
+- `NickDeKruijk\ListMailing\Laravel\SignUpFailed` once when the job fails for good, with `subscription`, `listId` (null when none was set) and `exception`. Also when the worker gives up on it, after a timeout or once the retry period passed in the queue. Not when it only waits to try again.
 
 ```php
 use Illuminate\Support\Facades\Event;
