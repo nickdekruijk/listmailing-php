@@ -254,8 +254,8 @@ private function subscription(Booking $booking): Subscription
 The customer gets a confirmation mail from ListMailing. To put the confirmation in your own booking mail instead, ask for a link. That needs the answer right away, so it is a direct call and not the job. Give it a short timeout, or the booking waits up to 10 seconds when ListMailing is slow, and fall back to the job when it fails, so the booking mail still goes out:
 
 ```php
-use NickDeKruijk\ListMailing\Confirmation;
 use InvalidArgumentException;
+use NickDeKruijk\ListMailing\Confirmation;
 use NickDeKruijk\ListMailing\Exceptions\ListMailingException;
 use NickDeKruijk\ListMailing\Laravel\ListMailing;
 use NickDeKruijk\ListMailing\Laravel\SubscribeToList;
