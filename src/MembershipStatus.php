@@ -16,7 +16,7 @@ enum MembershipStatus: string
     /** Was on the list and is not any more. */
     case Unsubscribed = 'unsubscribed';
 
-    /** Blocked after a spam complaint or a hard bounce. Gets no mail. */
+    /** Blocked after a spam complaint or a hard bounce. Gets no mail. A link the customer clicks lifts a bounce, nothing lifts a complaint. */
     case Suppressed = 'suppressed';
 
     /** Unknown on this list. */

@@ -16,7 +16,9 @@ use Throwable;
 
 /**
  * Stands in for the client in the tests of your site, see ListMailing::fake().
- * Every call is recorded. A sign-up answers Pending unless told otherwise.
+ * Every call is recorded. Unless told otherwise a sign-up answers the way
+ * ListMailing does for a new address: Subscribed with Confirmation::None,
+ * Pending with a mail or a link.
  */
 class ClientFake implements ClientInterface
 {
@@ -37,7 +39,9 @@ class ClientFake implements ClientInterface
     /**
      * The answers to the next sign-ups, in order. An outcome becomes a result,
      * with a fake confirmation URL when the sign-up asked for a link. A
-     * Throwable is thrown. Once they are used up, sign-ups answer Pending.
+     * Throwable is thrown. Once they are used up, sign-ups answer as for a
+     * new address again. assertAllAnswersUsed() tells you when your code made
+     * fewer sign-ups than you gave answers for.
      */
     public function respondWith(SubscribeOutcome|SubscribeResult|Throwable ...$answers): static
     {
@@ -75,7 +79,9 @@ class ClientFake implements ClientInterface
         $listId = $this->list($listId);
         $this->subscribed[] = ['subscription' => $subscription, 'listId' => $listId, 'idempotencyKey' => $idempotencyKey];
 
-        $answer = array_shift($this->subscribeAnswers) ?? SubscribeOutcome::Pending;
+        $answer = array_shift($this->subscribeAnswers) ?? ($subscription->confirmation === Confirmation::None
+            ? SubscribeOutcome::Subscribed
+            : SubscribeOutcome::Pending);
 
         if ($answer instanceof Throwable) {
             throw $answer;
@@ -92,6 +98,7 @@ class ClientFake implements ClientInterface
             subscriberId: in_array($answer, [SubscribeOutcome::Subscribed, SubscribeOutcome::AlreadySubscribed], true) ? 'fake-subscriber-id' : null,
             confirmationUrl: $link ? 'https://listmailing.test/subscribe/confirm/fake' : null,
             created: $answer === SubscribeOutcome::Pending || $answer === SubscribeOutcome::Subscribed,
+            status: $answer->value,
         );
     }
 
@@ -134,6 +141,18 @@ class ClientFake implements ClientInterface
             $this->matching($email, $listId),
             'A sign-up was asked for '.$this->describe($email, $listId).'.',
         );
+    }
+
+    /**
+     * Assert every answer given with respondWith() and statusWith() was used.
+     * An answer left over means the code under test made fewer calls than the
+     * test set up, and what the test asserts after that may never have run.
+     */
+    public function assertAllAnswersUsed(): void
+    {
+        $left = count($this->subscribeAnswers) + count($this->statusAnswers);
+
+        Assert::assertSame(0, $left, "{$left} answer(s) given to the fake were never used.");
     }
 
     public function assertNothingSubscribed(): void

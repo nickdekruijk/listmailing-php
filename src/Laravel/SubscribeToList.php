@@ -42,6 +42,13 @@ class SubscribeToList implements ShouldQueueAfterCommit
      */
     public const RETRY_HOURS = 48;
 
+    /**
+     * The longest a try is put back for. A full day can be 24 hours away, and
+     * a queue such as SQS refuses a delay of more than 12; the job then just
+     * asks again and waits once more.
+     */
+    public const MAX_RELEASE = 43200;
+
     public readonly ?string $listId;
 
     public readonly string $idempotencyKey;
@@ -60,7 +67,9 @@ class SubscribeToList implements ShouldQueueAfterCommit
         // request that dispatched it.
         $this->listId = is_string($listId) && $listId !== '' ? $listId : null;
         $this->idempotencyKey = self::idempotencyKey($subscription, (string) $this->listId);
-        $this->createdAt = time();
+        // Laravel's clock, the one the worker compares retryUntil() with, so
+        // a test that freezes time sees one moment and not two.
+        $this->createdAt = now()->getTimestamp();
 
         $queue = config('listmailing.queue');
 
@@ -72,9 +81,10 @@ class SubscribeToList implements ShouldQueueAfterCommit
     /**
      * The key sent with every try. With a reference it is the same for the
      * same list, address, confirmation and reference, so dispatching the same
-     * booking twice signs up once. ListMailing keeps keys per token, not per
-     * list, which is why the list and the address are part of it. Without a
-     * reference every dispatch gets a key of its own.
+     * booking twice signs up once. ListMailing keeps keys per token and per
+     * list; the list and the address are part of the key all the same, so
+     * one key always means one sign-up. Without a reference every dispatch
+     * gets a key of its own.
      *
      * @param  string|null  $listId  null uses config('listmailing.list'), as dispatch() does, so you get the key the job would send
      */
@@ -110,17 +120,18 @@ class SubscribeToList implements ShouldQueueAfterCommit
         try {
             $result = app(ClientInterface::class)->subscribe($this->subscription, $this->listId, $this->idempotencyKey);
         } catch (Retryable $e) {
-            $delay = max(1, $e->retryAfter() ?? $this->backoffDelay());
+            $wait = max(1, $e->retryAfter() ?? $this->backoffDelay());
 
             // Out of time: fail with the real reason instead of letting the
-            // worker fail it later without one.
-            if (time() + $delay > $this->retryUntil()->getTimestamp()) {
+            // worker fail it later without one. Judged on the whole wait that
+            // was asked for, not on the part of it one release may cover.
+            if (now()->getTimestamp() + $wait > $this->retryUntil()->getTimestamp()) {
                 $this->failWith($e);
 
                 return;
             }
 
-            $this->release($delay);
+            $this->release(min(self::MAX_RELEASE, $wait));
 
             return;
         } catch (ListMailingException|InvalidArgumentException $e) {
@@ -129,7 +140,30 @@ class SubscribeToList implements ShouldQueueAfterCommit
             return;
         }
 
-        event(new SignUpProcessed($this->subscription, $this->listId, $result));
+        // The sign-up went through, whatever a listener makes of it. An
+        // exception let out of here would make the worker try the job again,
+        // at once and for two days: every try replays the request, fires this
+        // event again and spends the rate limit of the token, and once
+        // ListMailing has forgotten the key it is a new sign-up with a new
+        // mail. So it is reported, and that is all.
+        try {
+            event(new SignUpProcessed($this->subscription, $this->listId, $result));
+        } catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * How long the worker waits when the job is put back by something other
+     * than handle() itself, a worker that was killed for instance. Without
+     * this a worker started with the default --backoff=0 would try again at
+     * once.
+     *
+     * @return list<int>
+     */
+    public function backoff(): array
+    {
+        return self::BACKOFF;
     }
 
     /**

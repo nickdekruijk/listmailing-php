@@ -1,6 +1,9 @@
 <?php
 
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use NickDeKruijk\ListMailing\Client;
@@ -22,6 +25,8 @@ use NickDeKruijk\ListMailing\Exceptions\ValidationFailed;
 use NickDeKruijk\ListMailing\MembershipStatus;
 use NickDeKruijk\ListMailing\SubscribeOutcome;
 use NickDeKruijk\ListMailing\Subscription;
+use Symfony\Component\VarDumper\Cloner\VarCloner;
+use Symfony\Component\VarDumper\Dumper\CliDumper;
 
 describe('subscribe', function () {
     it('maps every status to an outcome', function (int $http, string $status, SubscribeOutcome $outcome, bool $created) {
@@ -277,7 +282,6 @@ describe('errors', function () {
             ->toThrow(UnexpectedResponse::class);
     })->with([
         'no json' => [fn () => new Response(200, [], 'OK')],
-        'unknown status' => [fn () => json(200, ['status' => 'something_new', 'subscriber_id' => null])],
         'no status' => [fn () => json(201, ['subscriber_id' => null])],
     ]);
 
@@ -366,5 +370,117 @@ describe('defaultLocale', function () {
 
     it('keeps the fallback language in a copy with a shorter timeout', function () {
         expect((new Client('lm_test_token', defaultLocale: 'en'))->withTimeout(3)->defaultLocale)->toBe('en');
+    });
+});
+
+describe('the token', function () {
+    it('is trimmed, so a secret file that ends in a newline works', function () {
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([json(201, ['status' => 'pending', 'subscriber_id' => null])]));
+        $stack->push(Middleware::history($history));
+
+        (new Client("lm_test_token\n", 'https://listmailing.test/api/v1', 'list-1', 10.0, new GuzzleHttp\Client(['handler' => $stack])))
+            ->subscribe(new Subscription('anna@example.com'));
+
+        expect($history[0]['request']->getHeaderLine('Authorization'))->toBe('Bearer lm_test_token');
+    });
+
+    it('is refused when it holds a character a header cannot carry, without repeating it', function (string $token) {
+        try {
+            new Client($token);
+        } catch (InvalidArgumentException $e) {
+            expect($e->getMessage())->not->toContain('lm_secret');
+
+            return;
+        }
+
+        $this->fail('The token was accepted.');
+    })->with([
+        'a line break inside' => ["lm_secret\ntoken"],
+        'a control character' => ["lm_secret\x01token"],
+        'a space inside' => ['lm_secret token'],
+    ]);
+
+    it('stays out of every kind of dump', function () {
+        $client = new Client('lm_secret_token');
+
+        $dumper = new CliDumper;
+        $dumped = $dumper->dump((new VarCloner)->cloneVar($client), true);
+
+        expect($dumped)->not->toContain('lm_secret_token')
+            ->and(var_export($client, true))->not->toContain('lm_secret_token')
+            ->and(print_r($client, true))->not->toContain('lm_secret_token')
+            ->and(json_encode($client))->not->toContain('lm_secret_token');
+    });
+
+    it('still travels with a copy made by withTimeout', function () {
+        $client = client([json(201, ['status' => 'pending', 'subscriber_id' => null])], $history);
+
+        $client->withTimeout(3)->subscribe(new Subscription('anna@example.com'));
+
+        expect($history[0]['request']->getHeaderLine('Authorization'))->toBe('Bearer lm_test_token');
+    });
+});
+
+describe('answers nobody planned for', function () {
+    it('gives a status ListMailing added later as unknown, with the word it sent', function () {
+        $result = client([json(201, ['status' => 'something_new', 'subscriber_id' => 'sub_1'])])
+            ->subscribe(new Subscription('anna@example.com'));
+
+        // The sign-up went through: a new word for it must not be an error.
+        expect($result->outcome)->toBe(SubscribeOutcome::Unknown)
+            ->and($result->status)->toBe('something_new')
+            ->and($result->subscriberId)->toBe('sub_1')
+            ->and($result->outcome->awaitsConfirmation())->toBeFalse()
+            ->and($result->outcome->isOnList())->toBeFalse();
+    });
+
+    it('keeps the word ListMailing sent for a status it knows too', function () {
+        $result = client([json(200, ['status' => 'already_subscribed', 'subscriber_id' => 'sub_1'])])
+            ->subscribe(new Subscription('anna@example.com'));
+
+        expect($result->status)->toBe('already_subscribed');
+    });
+
+    it('still refuses a 2xx without a status', function () {
+        client([json(200, ['subscriber_id' => 'sub_1'])])->subscribe(new Subscription('anna@example.com'));
+    })->throws(UnexpectedResponse::class);
+
+    it('retries any 429, also one that is not from ListMailing itself', function (Response $response, ?int $retryAfter) {
+        try {
+            client([$response])->subscribe(new Subscription('anna@example.com'));
+        } catch (RateLimited $e) {
+            expect($e)->toBeInstanceOf(Retryable::class)
+                ->and($e->retryAfter())->toBe($retryAfter);
+
+            return;
+        }
+
+        $this->fail('No RateLimited was thrown.');
+    })->with([
+        'html from a proxy' => [new Response(429, ['Retry-After' => '30'], '<html>Too many requests</html>'), 30],
+        'json without a code' => [new Response(429, ['Content-Type' => 'application/json'], '{"message":"slow down"}'), null],
+        'json with a code of somebody else' => [new Response(429, ['Content-Type' => 'application/json', 'Retry-After' => '5'], '{"error":"too_many","message":"slow down"}'), 5],
+    ]);
+
+    it('still tells a full day apart from a full minute', function () {
+        client([json(429, ['error' => 'daily_limit_reached', 'message' => 'Full.'], ['Retry-After' => '3600'])])
+            ->subscribe(new Subscription('anna@example.com'));
+    })->throws(DailyLimitReached::class);
+
+    it('refuses text that is not valid UTF-8 before anything is sent, and does not call it a connection failure', function () {
+        $client = client([json(201, ['status' => 'pending', 'subscriber_id' => null])], $history);
+
+        try {
+            $client->subscribe(new Subscription('anna@example.com', firstName: "Ren\xE9"));
+        } catch (Throwable $e) {
+            expect($e)->toBeInstanceOf(InvalidArgumentException::class)
+                ->not->toBeInstanceOf(Retryable::class)
+                ->and($history)->toBeEmpty();
+
+            return;
+        }
+
+        $this->fail('Nothing was thrown.');
     });
 });

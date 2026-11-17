@@ -214,7 +214,8 @@ it('keeps retrying after a delay for the full period', function () {
     $delayed = run((new SubscribeToList(booking()))->delay(now()->addDay()));
     $now = run(new SubscribeToList(booking()));
 
-    $delayed->assertReleased(delay: $wait);
+    // Put back for at most twelve hours at a time; it asks again after that.
+    $delayed->assertReleased(delay: SubscribeToList::MAX_RELEASE);
     $now->assertFailedWith(DailyLimitReached::class);
 });
 

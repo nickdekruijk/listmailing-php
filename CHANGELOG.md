@@ -5,6 +5,35 @@ All notable changes to `nickdekruijk/listmailing-php` are documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-17
+
+Found in an audit of the package against the API it talks to. Nothing changes for code that works today, except where it says so.
+
+### Fixed
+
+- **A listener that throws no longer repeats the job for two days.** `SubscribeToList` fired `SignUpProcessed` outside its error handling. An exception from a listener, the README's own `Booking::update()` when the database hiccups for instance, escaped the job. The worker then tried it again at once, for 48 hours: every try replayed the request, fired the event again and spent the rate limit of the token, and after ListMailing forgot the Idempotency-Key it became a new sign-up with a new mail. The exception is now reported to your exception handler and the job is done, because the sign-up went through. On the `sync` queue it no longer breaks the request either. The job also has a `backoff()` now, for a job the worker puts back itself.
+- **The token no longer ends up in error messages.** A token read from a secret file that ends in a newline made the HTTP library refuse the header and quote it, token included, into logs, the error tracker and `failed_jobs`. The token is now trimmed, and one that holds a space, a line break or a control character is refused with a message that does not repeat it.
+- **`dump()`, `dd()` and `var_export()` no longer show the token.** The docblock said so, but only `var_dump()` and `print_r()` left it out. The token is no longer a property of the client.
+- **A status added to the API later no longer fails every sign-up.** An unknown `status` in a successful answer threw `UnexpectedResponse`, which failed the job for good although the address was signed up. It now gives `SubscribeOutcome::Unknown`, with the word ListMailing sent in `$result->status`, and `SignUpProcessed` fires as usual. A successful answer without a status still throws.
+- **Text that is not valid UTF-8 is refused straight away.** A name from an old latin1 table was reported as "could not be reached" and tried again for two days. It now throws an `InvalidArgumentException` before anything is sent.
+- **Any 429 is tried again.** A 429 from a proxy or firewall in front of ListMailing, without ListMailing's error code or without JSON, was an `UnexpectedResponse` and failed the job. It is now a `RateLimited`, with its `Retry-After`.
+- **A job waits at most twelve hours at a time** (`SubscribeToList::MAX_RELEASE`). After a full day the wait can be up to 24 hours, and a queue such as SQS refuses a delay over 12. The job then asks again and waits once more. Whether there is time left to wait at all is still judged on the whole wait.
+- **A sign-up queued by 0.1.0 with a language ListMailing does not know** was still sent with it after an upgrade and answered with a 422. `Subscription::toArray()` drops it now too.
+- The job reads Laravel's clock instead of `time()`, so a test of your site that freezes time sees one moment.
+- The "blocked address" example in the README had `catch (Throwable $e)` without importing `Throwable`, which catches nothing in namespaced code.
+
+### Changed
+
+- **`ClientFake` answers `Subscribed` for a sign-up with `Confirmation::None`**, as ListMailing does, where it answered `Pending`. A test that relied on `Pending` there has to say so with `respondWith()`.
+- The README and the docblocks follow two changes on ListMailing's side. A confirmation link handed back with `Confirmation::Link` lifts a block after a hard bounce, but no longer one after a spam complaint: that sign-up answers `Suppressed` without a link. And an Idempotency-Key now counts per token and per list.
+
+### Added
+
+- `SubscribeOutcome::Unknown` and `SubscribeResult::$status`, see above.
+- `ClientFake::assertAllAnswersUsed()` fails when an answer given to `respondWith()` or `statusWith()` was never asked for, so a test cannot quietly assert less than it set up.
+- A section in the README on the personal data a queued sign-up leaves in `jobs` and `failed_jobs`.
+- CI runs with read-only permissions and checks `composer validate` and `composer audit`.
+
 ## [0.1.2] - 2026-11-17
 
 ### Changed

@@ -21,10 +21,19 @@ enum SubscribeOutcome: string
 
     /**
      * The address is blocked after a spam complaint or a hard bounce. Nothing
-     * was sent and nothing changed. Only a confirmation link the customer
-     * clicks lifts that, see Confirmation::Link.
+     * was sent and nothing changed. After a hard bounce a confirmation link
+     * the customer clicks lifts that, see Confirmation::Link. After a spam
+     * complaint nothing does: asking for a link gives Suppressed again.
      */
     case Suppressed = 'suppressed';
+
+    /**
+     * ListMailing answered that the sign-up went through, with a status this
+     * version of the package does not know. Never sent by ListMailing as
+     * such: SubscribeResult::$status holds the word it did send. Update the
+     * package to get its meaning.
+     */
+    case Unknown = 'unknown';
 
     /** Whether the customer still has to confirm before they are on the list. */
     public function awaitsConfirmation(): bool

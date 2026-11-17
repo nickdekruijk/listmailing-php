@@ -7,6 +7,8 @@ use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface as GuzzleClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
 use InvalidArgumentException;
+use JsonException;
+use LogicException;
 use NickDeKruijk\ListMailing\Exceptions\ConnectionFailed;
 use NickDeKruijk\ListMailing\Exceptions\DailyLimitReached;
 use NickDeKruijk\ListMailing\Exceptions\HttpsRequired;
@@ -22,6 +24,7 @@ use NickDeKruijk\ListMailing\Exceptions\UnexpectedResponse;
 use NickDeKruijk\ListMailing\Exceptions\ValidationFailed;
 use Psr\Http\Message\ResponseInterface;
 use SensitiveParameter;
+use WeakMap;
 
 /**
  * Client for the ListMailing sign-up API. Keep the token on your server, it
@@ -42,6 +45,16 @@ final class Client implements ClientInterface
     private readonly GuzzleClientInterface $http;
 
     /**
+     * The token of every client, kept beside the object and not on it. A
+     * property, also a private one, is printed by dump(), dd(), var_export()
+     * and every error tracker that shows local variables; a static map keyed
+     * by the object is not, and it lets go of a token when its client goes.
+     *
+     * @var WeakMap<self, string>|null
+     */
+    private static ?WeakMap $tokens = null;
+
+    /**
      * @param  string  $token  the API token, starting with lm_
      * @param  string  $baseUrl  must be https
      * @param  string|null  $defaultList  the list id used when a call names none
@@ -49,19 +62,31 @@ final class Client implements ClientInterface
      * @param  GuzzleClientInterface|null  $http  for tests or a custom handler stack
      * @param  string|null  $defaultLocale  nl or en, sent when a sign-up has no language of its own (or one ListMailing does not know); null leaves it to the language of your page
      *
-     * @throws InvalidArgumentException on an empty token, a base URL that is not https or a timeout of 0 or less
+     * @throws InvalidArgumentException on an empty token, a token with a character a header cannot carry, a base URL that is not https or a timeout of 0 or less
      */
     public function __construct(
-        #[SensitiveParameter] private readonly string $token,
+        #[SensitiveParameter] string $token,
         string $baseUrl = self::DEFAULT_BASE_URL,
         public readonly ?string $defaultList = null,
         public readonly float $timeout = self::DEFAULT_TIMEOUT,
         ?GuzzleClientInterface $http = null,
         ?string $defaultLocale = null,
     ) {
-        if (trim($token) === '') {
+        // Read from a secret file or an env line, a token often ends in a
+        // newline. Sent as it is, the HTTP library refuses the header and
+        // says why by quoting it, token and all, into logs and failed jobs.
+        $token = trim($token);
+
+        if ($token === '') {
             throw new InvalidArgumentException('A ListMailing API token is required.');
         }
+
+        if (preg_match('/[^\x21-\x7E]/', $token) === 1) {
+            throw new InvalidArgumentException('The ListMailing API token holds a space, a line break or another character a token never has. Check how it is read from your configuration.');
+        }
+
+        self::$tokens ??= new WeakMap;
+        self::$tokens[$this] = $token;
 
         // The token goes in every request, so it never travels unencrypted.
         if (! str_starts_with(strtolower($baseUrl), 'https://')) {
@@ -85,7 +110,7 @@ final class Client implements ClientInterface
      */
     public function withTimeout(float $seconds): static
     {
-        return new self($this->token, $this->baseUrl, $this->defaultList, $seconds, $this->http, $this->defaultLocale);
+        return new self($this->token(), $this->baseUrl, $this->defaultList, $seconds, $this->http, $this->defaultLocale);
     }
 
     /**
@@ -110,9 +135,19 @@ final class Client implements ClientInterface
             $body['locale'] = $this->defaultLocale;
         }
 
+        // Encoded here and not by the HTTP library: text that is not valid
+        // UTF-8 (a name from an old latin1 table) cannot be sent at all, and
+        // the library reports that as a failed transfer, which the job would
+        // try again for two days.
+        try {
+            $json = json_encode($body, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new InvalidArgumentException('The sign-up holds text that is not valid UTF-8, so it cannot be sent.');
+        }
+
         $response = $this->send('POST', $this->path($listId), [
             'headers' => $headers,
-            'json' => $body,
+            'body' => $json,
         ]);
 
         return SubscribeResult::fromResponse($this->decode($response), $response->getStatusCode());
@@ -128,7 +163,9 @@ final class Client implements ClientInterface
     }
 
     /**
-     * Leaves the token out of var_dump and dump().
+     * What var_dump() and print_r() show. The token is not a property of the
+     * object at all (see $tokens), so dump(), dd() and var_export() cannot
+     * show it either.
      *
      * @return array<string, mixed>
      */
@@ -140,6 +177,11 @@ final class Client implements ClientInterface
             'timeout' => $this->timeout,
             'defaultLocale' => $this->defaultLocale,
         ];
+    }
+
+    private function token(): string
+    {
+        return self::$tokens[$this] ?? throw new LogicException('This ListMailing client has no token: it was not made through its constructor.');
     }
 
     private function path(?string $listId): string
@@ -161,7 +203,7 @@ final class Client implements ClientInterface
     private function send(string $method, string $url, array $options): ResponseInterface
     {
         $options['headers'] = [
-            'Authorization' => 'Bearer '.$this->token,
+            'Authorization' => 'Bearer '.$this->token(),
             'Accept' => 'application/json',
             'Content-Type' => 'application/json',
             'User-Agent' => 'listmailing-php/'.(InstalledVersions::getPrettyVersion('nickdekruijk/listmailing-php') ?? 'dev'),
@@ -211,6 +253,18 @@ final class Client implements ClientInterface
         if ($status >= 500) {
             throw new ServerError(
                 self::message($body, "ListMailing answered with HTTP {$status}."),
+                self::errorCode($body),
+                $status,
+                self::retryAfter($response),
+            );
+        }
+
+        // A 429 means "later", whoever says it: a proxy or a firewall in
+        // front of ListMailing answers with a page of its own, without our
+        // error code. Only a full day is told apart, below.
+        if ($status === 429 && self::errorCode($body) !== 'daily_limit_reached') {
+            throw new RateLimited(
+                self::message($body, 'ListMailing answered with HTTP 429.'),
                 self::errorCode($body),
                 $status,
                 self::retryAfter($response),

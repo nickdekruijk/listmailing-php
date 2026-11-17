@@ -49,3 +49,12 @@ it('leaves an unknown locale out of the request, so the page language is used', 
         ->and($subscription->withConfirmation(Confirmation::Link)->locale)->toBeNull()
         ->and(unserialize(serialize(new Subscription('anna@example.com', locale: 'nl_NL')))->locale)->toBe('nl');
 });
+
+it('leaves out a language ListMailing does not know, also on a sign-up queued by an older version', function () {
+    // 0.1.0 kept the language as given, and a job it queued is unserialized
+    // without the constructor that drops it now.
+    $queued = unserialize(str_replace('s:2:"nl"', 's:2:"de"', serialize(new Subscription('anna@example.com', locale: 'nl'))));
+
+    expect($queued->locale)->toBe('de')
+        ->and($queued->toArray())->not->toHaveKey('locale');
+});

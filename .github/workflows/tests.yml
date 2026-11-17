@@ -5,6 +5,10 @@ on:
     branches: [master, main]
   pull_request:
 
+# Nothing here writes to the repository: reading the code is all a test run needs.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -52,8 +56,16 @@ jobs:
           php-version: '8.5'
           coverage: none
 
+      - name: Validate composer.json
+        run: composer validate --strict
+
       - name: Install dependencies
         run: composer update --prefer-dist --no-interaction
+
+      # A library has no lock file in the repository, so this checks the
+      # versions a fresh install gets today.
+      - name: Check dependencies for known vulnerabilities
+        run: composer audit
 
       - name: Check code style
         run: vendor/bin/pint --test

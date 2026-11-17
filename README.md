@@ -67,6 +67,7 @@ $result = $listMailing->withTimeout(3)->subscribe($subscription);
 | `ResubscribePending` | Unsubscribed before and signing up again. A confirmation was asked for. |
 | `Subscribed` | On the list straight away, only with `Confirmation::None`. |
 | `Suppressed` | The address is blocked after a spam complaint or a hard bounce. Nothing was sent. See below. |
+| `Unknown` | The sign-up went through, with a status this version of the package does not know yet. `$result->status` holds the word ListMailing sent. Update the package to get its meaning. |
 
 `$result->outcome->awaitsConfirmation()` is true for `Pending` and `ResubscribePending`, `$result->outcome->isOnList()` for `Subscribed` and `AlreadySubscribed`.
 
@@ -75,10 +76,10 @@ $result = $listMailing->withTimeout(3)->subscribe($subscription);
 The `confirmation` field of a `Subscription` takes a `Confirmation`:
 
 - `Confirmation::Email`, the default: ListMailing sends a confirmation mail from your sender.
-- `Confirmation::Link`: nothing is sent, you get `confirmationUrl` back to put as a button in a mail you send anyway, such as the booking confirmation. One mail instead of two, still a real double opt-in. The link is valid for 30 days.
+- `Confirmation::Link`: nothing is sent, you get `confirmationUrl` back to put as a button in a mail you send anyway, such as the booking confirmation. One mail instead of two, still a real double opt-in. The link is valid for 30 days. ListMailing does not take a link it handed to you as proof that mail arrives at the address: the first newsletter that is delivered there is.
 - `Confirmation::None`: on the list straight away. Only after ListMailing has enabled single opt-in for your account; until then you get `SingleOptInNotEnabled`.
 
-A suppressed address gets nothing with `Email` or `None`. Only a confirmation link the customer clicks themselves lifts the block, so use `Link` and put the button in a mail of your own.
+A suppressed address gets nothing with `Email` or `None`. After a hard bounce, a confirmation link the customer clicks themselves lifts the block, so use `Link` and put the button in a mail of your own. After a spam complaint nothing your site does lifts it: `Link` answers `Suppressed` as well, without a `confirmationUrl`.
 
 ### Looking up a status
 
@@ -91,7 +92,7 @@ $status->subscriberId;
 
 ### Idempotency-Key
 
-Send an Idempotency-Key with every sign-up, such as your own reference. The same key within 24 hours returns the same answer and does nothing again, so a retry after a timeout never mails twice. ListMailing keeps keys per token, not per list: use a key of its own per list and address. Only successful answers are kept, so after an error the same key can simply be tried again.
+Send an Idempotency-Key with every sign-up, such as your own reference. The same key within 24 hours returns the same answer and does nothing again, so a retry after a timeout never mails twice. ListMailing keeps keys per token and per list, so the same key on another list is a new request. Use a key of its own per address: your own reference is fine when one reference signs up one address. Only successful answers are kept, so after an error the same key can simply be tried again.
 
 ### Errors
 
@@ -114,7 +115,9 @@ Every error is a `NickDeKruijk\ListMailing\Exceptions\ListMailingException` with
 
 `RateLimited`, `DailyLimitReached`, `ServerError` and `ConnectionFailed` implement `Retryable`: try the same request again later, with the same Idempotency-Key. The others will fail again until something changes.
 
-Without a list id and without a default list, and on an empty token or a base URL that is not https, the client throws an `InvalidArgumentException`.
+Without a list id and without a default list, and on an empty token or a base URL that is not https, the client throws an `InvalidArgumentException`. So it does on text that is not valid UTF-8 in a sign-up, before anything is sent.
+
+The token is trimmed, so one read from a secret file that ends in a newline works, and refused when it holds a space or a control character. It is kept out of `dump()`, `dd()`, `var_export()` and the like; the messages of the exceptions never repeat it.
 
 ## With Laravel
 
@@ -175,7 +178,8 @@ SubscribeToList::dispatch($subscription, 'another-list-id');
 - A timeout, a 5xx, `RateLimited` or `DailyLimitReached` is tried again later. The job waits the seconds of `Retry-After`, or 1, 5, 15, 30 and then 60 minutes when there is none, and keeps trying for 48 hours, counted from the moment the job becomes available, so after any `delay()`. A full day thus goes through after midnight UTC.
 - Every try sends the same Idempotency-Key, fixed when the job is dispatched, so a retry never mails twice. With a `reference` the key is derived from the list, the address, the confirmation and the reference: dispatching the same booking twice signs up once.
 - Any other error is reported to your exception handler and fails the job, without a retry. So is a missing token or list id, and a retryable error once the 48 hours are over.
-- The job never throws. On the `sync` queue a booking still goes through, but nothing is tried again; use a real queue in production.
+- The job never throws, also when one of your listeners does: an exception in a `SignUpProcessed` listener is reported to your exception handler and the job is done. The sign-up went through, so it is not tried again. On the `sync` queue a booking still goes through, but nothing is tried again; use a real queue in production.
+- A wait is at most twelve hours at a time. After a full day the job asks again and waits once more, so it also works on a queue that takes no longer delay, such as SQS.
 - The job is dispatched after the database transaction commits, so a booking that is rolled back signs no one up.
 
 The job fires two events, so your site can keep track:
@@ -285,9 +289,9 @@ Mail::to($booking->email)->send(new BookingConfirmation($booking, $confirmationU
 
 ### A blocked address
 
-An address that made a spam complaint or bounced hard gets `Suppressed` with `Email` and with `None`: ListMailing sends it nothing, not even a confirmation. Only a confirmation link the customer clicks themselves lifts the block. With the job, handle it in a listener: ask for a link and send it in a mail of your own.
+An address that made a spam complaint or bounced hard gets `Suppressed` with `Email` and with `None`: ListMailing sends it nothing, not even a confirmation. After a hard bounce a confirmation link the customer clicks themselves lifts the block. With the job, handle it in a listener: ask for a link and send it in a mail of your own. After a spam complaint the answer to that is `Suppressed` again, without a link: that address stays off the list, and the listener below then sends nothing.
 
-The listener runs inside the job, so catch what it throws: an exception would fail a job whose sign-up already went through, and the job would be tried again until its retry period is over. Give the call a key of its own, so a repeat does not hand out a second link.
+The listener runs inside the job. An exception it lets out is reported and ends the listener there, without repeating the job; catch what the call may throw anyway, so one failed mail does not keep the listeners after it from running. Give the call a key of its own, so a repeat does not hand out a second link.
 
 ```php
 use Illuminate\Support\Facades\Event;
@@ -297,6 +301,7 @@ use NickDeKruijk\ListMailing\Laravel\ListMailing;
 use NickDeKruijk\ListMailing\Laravel\SignUpProcessed;
 use NickDeKruijk\ListMailing\Laravel\SubscribeToList;
 use NickDeKruijk\ListMailing\SubscribeOutcome;
+use Throwable;
 
 Event::listen(function (SignUpProcessed $event) {
     if ($event->result->outcome !== SubscribeOutcome::Suppressed) {
@@ -322,7 +327,7 @@ Event::listen(function (SignUpProcessed $event) {
 });
 ```
 
-With the link in your booking mail, as above, you never get `Suppressed`: the link already is the way back.
+With the link in your booking mail, as above, an address that bounced before gets its link like any other: the link already is the way back. Only after a spam complaint is `confirmationUrl` null there too; then leave the button out.
 
 ## Example: your own confirmation, then single opt-in
 
@@ -370,6 +375,10 @@ class NewsletterController
 
 The form on the confirm page posts to the same signed URL, for example `action="{{ URL::signedRoute('newsletter.confirm.store', $booking) }}"`. Send `consentedAt` as the moment of that click, and `consentText` as the sentence the customer agreed to. A blocked address still answers `Suppressed`: handle it as in [A blocked address](#a-blocked-address), with a link.
 
+## Personal data in your queue
+
+A queued `SubscribeToList` carries the sign-up: the address, the name and the consent text. On the database queue that sits in your `jobs` table until the job ran, and a job that failed for good stays in `failed_jobs` until you remove it. Run `php artisan queue:prune-failed` on a schedule, so those rows do not outlive what your privacy statement says. Tools that record jobs and events, such as Telescope and Horizon, show the same data; filter it there if they run in production.
+
 ## Testing your site
 
 `ListMailing::fake()` puts a fake in place of the client. The job uses it too. Nothing is sent and every call is recorded:
@@ -396,7 +405,7 @@ it('does not sign up without the box', function () {
 });
 ```
 
-The fake answers `Pending`, with a fake `confirmationUrl` when the sign-up asked for a link. Tell it otherwise with `respondWith()`, which takes outcomes, results or exceptions, used in order:
+The fake answers the way ListMailing does for a new address: `Pending`, with a fake `confirmationUrl` when the sign-up asked for a link, or `Subscribed` with `Confirmation::None`. Tell it otherwise with `respondWith()`, which takes outcomes, results or exceptions, used in order:
 
 ```php
 use NickDeKruijk\ListMailing\Exceptions\DailyLimitReached;
@@ -408,7 +417,7 @@ ListMailing::fake()->respondWith(
 );
 ```
 
-Status lookups answer `NotSubscribed`, or what you pass to `statusWith()`. The asserts: `assertSubscribed($emailOrClosure, $listId = null)`, `assertNotSubscribed(...)`, `assertNothingSubscribed()`, `assertSubscribedTimes($times)` and `assertStatusChecked($email, $listId = null)`. `subscriptions()` returns every recorded sign-up. `ListMailing::configured()` only reads the config, also with the fake: set `listmailing.token` and `listmailing.list` in your tests when a view depends on it. With the queue faked, use `Queue::assertPushed(SubscribeToList::class)` instead.
+Status lookups answer `NotSubscribed`, or what you pass to `statusWith()`. The asserts: `assertSubscribed($emailOrClosure, $listId = null)`, `assertNotSubscribed(...)`, `assertNothingSubscribed()`, `assertSubscribedTimes($times)`, `assertStatusChecked($email, $listId = null)` and `assertAllAnswersUsed()`, which fails when an answer you gave to `respondWith()` or `statusWith()` was never asked for. `subscriptions()` returns every recorded sign-up. `ListMailing::configured()` only reads the config, also with the fake: set `listmailing.token` and `listmailing.list` in your tests when a view depends on it. With the queue faked, use `Queue::assertPushed(SubscribeToList::class)` instead.
 
 ## Tests
 

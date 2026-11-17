@@ -89,3 +89,21 @@ it('records calls made with a shorter timeout', function () {
 it('refuses a timeout of 0 on the fake too', function () {
     ListMailing::withTimeout(0);
 })->throws(InvalidArgumentException::class, 'timeout');
+
+it('answers a sign-up without confirmation the way ListMailing does: subscribed', function () {
+    $result = ListMailing::fake()->subscribe(new Subscription('anna@example.com', confirmation: Confirmation::None));
+
+    expect($result->outcome)->toBe(SubscribeOutcome::Subscribed)
+        ->and($result->created)->toBeTrue()
+        ->and($result->subscriberId)->not->toBeNull();
+});
+
+it('can tell that an answer it was given was never used', function () {
+    $fake = ListMailing::fake()->respondWith(SubscribeOutcome::Suppressed, SubscribeOutcome::Subscribed);
+    $fake->subscribe(new Subscription('anna@example.com'));
+
+    expect(fn () => $fake->assertAllAnswersUsed())->toThrow(AssertionFailedError::class);
+
+    $fake->subscribe(new Subscription('bert@example.com'));
+    $fake->assertAllAnswersUsed();
+});

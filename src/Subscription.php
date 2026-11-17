@@ -85,7 +85,9 @@ final readonly class Subscription
             'email' => $this->email,
             'first_name' => $this->firstName,
             'last_name' => $this->lastName,
-            'locale' => $this->locale,
+            // Again here: a sign-up queued by a version that kept any
+            // language is unserialized without the constructor that drops it.
+            'locale' => self::normalizeLocale($this->locale),
             'source' => $this->source,
             'reference' => $this->reference,
             'consented_at' => $this->consentedAt?->format(DateTimeInterface::ATOM),
