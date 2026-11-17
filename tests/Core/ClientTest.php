@@ -252,7 +252,23 @@ describe('errors', function () {
             expect($e)->toBeInstanceOf(Retryable::class)
                 ->and($e->retryAfter())->toBeNull()
                 ->and($e->httpStatus)->toBeNull()
-                ->and($e->getPrevious())->toBeInstanceOf(ConnectException::class);
+                ->and($e->getPrevious())->toBeNull()
+                ->and($e->getMessage())->toContain('ConnectException')->toContain('Connection timed out');
+        }
+    });
+
+    it('leaves the email address out of a connection failure', function () {
+        $url = 'https://listmailing.test/api/v1/lists/list-1/subscribers?email=anna%40example.com';
+        $client = client([new ConnectException("cURL error 28: Operation timed out for {$url}", new Request('GET', $url))]);
+
+        try {
+            $client->status('anna@example.com');
+            $this->fail('Nothing was thrown.');
+        } catch (ConnectionFailed $e) {
+            expect($e->getMessage())->not->toContain('anna')
+                ->toContain('cURL error 28: Operation timed out')
+                ->toContain('/lists/list-1/subscribers?email=[hidden]')
+                ->and($e->getPrevious())->toBeNull();
         }
     });
 

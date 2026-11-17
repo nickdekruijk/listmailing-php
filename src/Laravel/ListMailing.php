@@ -17,6 +17,24 @@ use NickDeKruijk\ListMailing\Subscription;
 class ListMailing extends Facade
 {
     /**
+     * Whether a token and a default list are set, so a site can leave the
+     * newsletter box out or skip the sign-up instead of failing. Only reads
+     * the config: it builds no client and does not call the API.
+     */
+    public static function configured(): bool
+    {
+        foreach (['listmailing.token', 'listmailing.list'] as $key) {
+            $value = config($key);
+
+            if (! is_string($value) || trim($value) === '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Replace the client with a fake that records every call, for the tests of
      * your site. The SubscribeToList job uses it too.
      */

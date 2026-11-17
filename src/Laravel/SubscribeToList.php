@@ -2,6 +2,7 @@
 
 namespace NickDeKruijk\ListMailing\Laravel;
 
+use DateInterval;
 use DateTimeImmutable;
 use DateTimeInterface;
 use Illuminate\Bus\Queueable;
@@ -23,7 +24,8 @@ use Throwable;
  * a retry never mails twice. Any other error is reported and fails the job.
  *
  * Dispatched after the database transaction commits, so a booking that is
- * rolled back signs no one up.
+ * rolled back signs no one up. Fires SignUpProcessed after an answer and
+ * SignUpFailed when it gives up.
  */
 class SubscribeToList implements ShouldQueueAfterCommit
 {
@@ -32,14 +34,19 @@ class SubscribeToList implements ShouldQueueAfterCommit
     /** Seconds to wait before the next try when the answer gives no Retry-After. */
     public const BACKOFF = [60, 300, 900, 1800, 3600];
 
-    /** How long the job keeps trying. Long enough to get past a full day, which lasts until midnight UTC. */
+    /**
+     * How long the job keeps trying, counted from the moment it becomes
+     * available, so after any delay. Long enough to get past a full day,
+     * which lasts until midnight UTC.
+     */
     public const RETRY_HOURS = 48;
 
     public readonly ?string $listId;
 
     public readonly string $idempotencyKey;
 
-    public readonly int $retryUntilTimestamp;
+    /** When the job was dispatched, as a Unix timestamp. */
+    public readonly int $createdAt;
 
     /**
      * @param  string|null  $listId  null uses config('listmailing.list')
@@ -52,7 +59,7 @@ class SubscribeToList implements ShouldQueueAfterCommit
         // request that dispatched it.
         $this->listId = is_string($listId) && $listId !== '' ? $listId : null;
         $this->idempotencyKey = self::idempotencyKey($subscription, (string) $this->listId);
-        $this->retryUntilTimestamp = time() + self::RETRY_HOURS * 3600;
+        $this->createdAt = time();
 
         $queue = config('listmailing.queue');
 
@@ -82,7 +89,11 @@ class SubscribeToList implements ShouldQueueAfterCommit
         ]));
     }
 
-    public function handle(ClientInterface $client): void
+    /**
+     * The client is resolved here and not injected, so a missing token fails
+     * the job like any other error instead of throwing before handle() runs.
+     */
+    public function handle(): void
     {
         if ($this->listId === null) {
             $this->failWith(new InvalidArgumentException('No list id given to SubscribeToList and listmailing.list is not set.'));
@@ -91,13 +102,13 @@ class SubscribeToList implements ShouldQueueAfterCommit
         }
 
         try {
-            $result = $client->subscribe($this->subscription, $this->listId, $this->idempotencyKey);
+            $result = app(ClientInterface::class)->subscribe($this->subscription, $this->listId, $this->idempotencyKey);
         } catch (Retryable $e) {
             $delay = max(1, $e->retryAfter() ?? $this->backoffDelay());
 
             // Out of time: fail with the real reason instead of letting the
             // worker fail it later without one.
-            if (time() + $delay > $this->retryUntilTimestamp) {
+            if (time() + $delay > $this->retryUntil()->getTimestamp()) {
                 $this->failWith($e);
 
                 return;
@@ -115,9 +126,29 @@ class SubscribeToList implements ShouldQueueAfterCommit
         event(new SignUpProcessed($this->subscription, $this->listId, $result));
     }
 
+    /**
+     * Laravel reads this when the job is pushed, which is after a delay() has
+     * been set, and handle() reads it again from the same serialized values.
+     */
     public function retryUntil(): DateTimeInterface
     {
-        return new DateTimeImmutable('@'.$this->retryUntilTimestamp);
+        return new DateTimeImmutable('@'.($this->availableAt() + self::RETRY_HOURS * 3600));
+    }
+
+    /**
+     * When the job becomes available: the moment it was dispatched plus its
+     * delay, as a Unix timestamp.
+     */
+    public function availableAt(): int
+    {
+        $delay = is_array($this->delay) ? max([0, ...$this->delay]) : $this->delay;
+
+        return match (true) {
+            $delay instanceof DateTimeInterface => max($this->createdAt, $delay->getTimestamp()),
+            $delay instanceof DateInterval => (new DateTimeImmutable('@'.$this->createdAt))->add($delay)->getTimestamp(),
+            is_numeric($delay) => $this->createdAt + max(0, (int) $delay),
+            default => $this->createdAt,
+        };
     }
 
     private function backoffDelay(): int
@@ -128,12 +159,15 @@ class SubscribeToList implements ShouldQueueAfterCommit
     }
 
     /**
-     * Report the error, so it reaches the error tracker, and fail without a
-     * retry. Nothing is thrown, so a sync queue does not break the request.
+     * Report the error, so it reaches the error tracker, tell the site, and
+     * fail without a retry. Nothing is thrown, so a sync queue does not break
+     * the request.
      */
     private function failWith(Throwable $e): void
     {
         report($e);
+
+        event(new SignUpFailed($this->subscription, $this->listId, $e));
 
         $this->fail($e);
     }

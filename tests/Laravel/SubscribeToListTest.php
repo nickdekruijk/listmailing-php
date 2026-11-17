@@ -20,6 +20,7 @@ use NickDeKruijk\ListMailing\Exceptions\UnexpectedResponse;
 use NickDeKruijk\ListMailing\Exceptions\ValidationFailed;
 use NickDeKruijk\ListMailing\Laravel\ClientFake;
 use NickDeKruijk\ListMailing\Laravel\ListMailing;
+use NickDeKruijk\ListMailing\Laravel\SignUpFailed;
 use NickDeKruijk\ListMailing\Laravel\SignUpProcessed;
 use NickDeKruijk\ListMailing\Laravel\SubscribeToList;
 use NickDeKruijk\ListMailing\SubscribeOutcome;
@@ -33,14 +34,14 @@ function booking(string $email = 'anna@example.com', ?string $reference = 'B-202
 function run(SubscribeToList $job): SubscribeToList
 {
     $job->withFakeQueueInteractions();
-    $job->handle(app(ClientInterface::class));
+    $job->handle();
 
     return $job;
 }
 
 beforeEach(function () {
     $this->fake = ListMailing::fake();
-    Event::fake([SignUpProcessed::class]);
+    Event::fake([SignUpProcessed::class, SignUpFailed::class]);
     Exceptions::fake();
 });
 
@@ -93,7 +94,7 @@ it('backs off further on each attempt without Retry-After', function (int $attem
 
     $job = (new SubscribeToList(booking()))->withFakeQueueInteractions();
     $job->job->attempts = $attempts;
-    $job->handle(app(ClientInterface::class));
+    $job->handle();
 
     $job->assertReleased(delay: $delay);
 })->with([[1, 60], [2, 300], [3, 900], [4, 1800], [5, 3600], [12, 3600]]);
@@ -172,8 +173,66 @@ it('goes on the configured queue, after the commit', function () {
 it('retries for two days', function () {
     $job = new SubscribeToList(booking());
 
-    expect($job->retryUntil()->getTimestamp())->toBe($job->retryUntilTimestamp)
-        ->and($job->retryUntilTimestamp - time())->toBeGreaterThan(SubscribeToList::RETRY_HOURS * 3600 - 5);
+    expect($job->availableAt())->toBe($job->createdAt)
+        ->and($job->retryUntil()->getTimestamp())->toBe($job->createdAt + SubscribeToList::RETRY_HOURS * 3600);
+});
+
+it('counts the retry period from the end of a delay', function (Closure $delay, int $seconds) {
+    $job = (new SubscribeToList(booking()))->delay($delay());
+
+    expect($job->availableAt() - $job->createdAt)->toBeGreaterThanOrEqual($seconds - 1)->toBeLessThanOrEqual($seconds + 1)
+        ->and($job->retryUntil()->getTimestamp())->toBe($job->availableAt() + SubscribeToList::RETRY_HOURS * 3600);
+})->with([
+    'date' => [fn () => now()->addDay(), 86400],
+    'seconds' => [fn () => 3600, 3600],
+    'interval' => [fn () => new DateInterval('PT2H'), 7200],
+    'in the past' => [fn () => now()->subHour(), 0],
+]);
+
+it('keeps retrying after a delay for the full period', function () {
+    $wait = 50 * 3600;
+    $this->fake->respondWith(
+        new DailyLimitReached('Full.', 'daily_limit_reached', 429, $wait),
+        new DailyLimitReached('Full.', 'daily_limit_reached', 429, $wait),
+    );
+
+    $delayed = run((new SubscribeToList(booking()))->delay(now()->addDay()));
+    $now = run(new SubscribeToList(booking()));
+
+    $delayed->assertReleased(delay: $wait);
+    $now->assertFailedWith(DailyLimitReached::class);
+});
+
+it('fires SignUpFailed when it gives up', function (Throwable $failure) {
+    $this->fake->respondWith($failure);
+
+    run(new SubscribeToList(booking(), 'list-9'));
+
+    Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->exception === $failure
+        && $event->listId === 'list-9'
+        && $event->subscription->email === 'anna@example.com');
+    Event::assertNotDispatched(SignUpProcessed::class);
+})->with([
+    'not retryable' => [fn () => new ListNotAllowed('No.', 'list_not_allowed', 403)],
+    'past the retry period' => [fn () => new DailyLimitReached('Full.', 'daily_limit_reached', 429, SubscribeToList::RETRY_HOURS * 3600 + 1)],
+]);
+
+it('fires SignUpFailed without a list', function () {
+    config(['listmailing.list' => null]);
+
+    run(new SubscribeToList(booking()));
+
+    Event::assertDispatched(SignUpFailed::class, fn (SignUpFailed $event) => $event->listId === null
+        && $event->exception instanceof InvalidArgumentException);
+});
+
+it('fires no SignUpFailed on a release or a success', function () {
+    $this->fake->respondWith(new ConnectionFailed('Timed out.'));
+
+    run(new SubscribeToList(booking()));
+    run(new SubscribeToList(booking()));
+
+    Event::assertNotDispatched(SignUpFailed::class);
 });
 
 it('never throws on the sync queue', function () {

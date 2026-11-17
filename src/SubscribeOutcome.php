@@ -31,4 +31,10 @@ enum SubscribeOutcome: string
     {
         return $this === self::Pending || $this === self::ResubscribePending;
     }
+
+    /** Whether the address is on the list now. */
+    public function isOnList(): bool
+    {
+        return $this === self::Subscribed || $this === self::AlreadySubscribed;
+    }
 }

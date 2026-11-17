@@ -137,8 +137,19 @@ final class Client implements ClientInterface
                 'connect_timeout' => min($this->timeout, 5.0),
             ]);
         } catch (GuzzleException $e) {
-            throw new ConnectionFailed('ListMailing could not be reached: '.$e->getMessage(), null, null, $e);
+            // Not chained as previous: error trackers report the whole chain,
+            // and the message of the Guzzle exception holds the full URL.
+            throw new ConnectionFailed('ListMailing could not be reached ('.$e::class.'): '.self::withoutAddress($e->getMessage()));
         }
+    }
+
+    /**
+     * A Guzzle message without the address a status lookup puts in the query
+     * string, so it does not end up in logs or an error tracker.
+     */
+    private static function withoutAddress(string $message): string
+    {
+        return preg_replace('/([?&]email=)[^&\s]*/i', '$1[hidden]', $message) ?? 'ListMailing could not be reached.';
     }
 
     /**

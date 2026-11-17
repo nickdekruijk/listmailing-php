@@ -60,7 +60,7 @@ The constructor also takes `baseUrl` (default `https://listmailing.nl/api/v1`, o
 | `Subscribed` | On the list straight away, only with `Confirmation::None`. |
 | `Suppressed` | The address is blocked after a spam complaint or a hard bounce. Nothing was sent. See below. |
 
-`$result->outcome->awaitsConfirmation()` is true for `Pending` and `ResubscribePending`.
+`$result->outcome->awaitsConfirmation()` is true for `Pending` and `ResubscribePending`, `$result->outcome->isOnList()` for `Subscribed` and `AlreadySubscribed`.
 
 ### Confirmation
 
@@ -101,7 +101,7 @@ Every error is a `NickDeKruijk\ListMailing\Exceptions\ListMailingException` with
 | `RateLimited` | 429: too many requests per minute. `retryAfter` in seconds. |
 | `DailyLimitReached` | 429: the sign-ups for today are used up. `retryAfter` runs until midnight UTC. |
 | `ServerError` | 5xx: a failure on ListMailing's side. `retryAfter` when the answer gave one. |
-| `ConnectionFailed` | No answer: a timeout or a network error. |
+| `ConnectionFailed` | No answer: a timeout or a network error. The message leaves the email address out. |
 | `UnexpectedResponse` | An answer the client does not understand. |
 
 `RateLimited`, `DailyLimitReached`, `ServerError` and `ConnectionFailed` implement `Retryable`: try the same request again later, with the same Idempotency-Key. The others will fail again until something changes.
@@ -131,7 +131,13 @@ php artisan vendor:publish --tag=listmailing-config
 | `timeout` | `LISTMAILING_TIMEOUT` | `10` |
 | `queue` | `LISTMAILING_QUEUE` | the default queue |
 
-A missing token does not break your site: the client is built on first use, and only that call fails.
+A missing token does not break your site: the client is built on first use, and only that call fails. `ListMailing::configured()` tells whether a token and a default list are set, so you can leave the newsletter box out where they are not, for example on a local copy:
+
+```blade
+@if (\NickDeKruijk\ListMailing\Laravel\ListMailing::configured())
+    {{-- the newsletter box --}}
+@endif
+```
 
 ### Facade
 
@@ -155,32 +161,30 @@ SubscribeToList::dispatch($subscription);
 SubscribeToList::dispatch($subscription, 'another-list-id');
 ```
 
-- A timeout, a 5xx, `RateLimited` or `DailyLimitReached` is tried again later. The job waits the seconds of `Retry-After`, or 1, 5, 15, 30 and then 60 minutes when there is none, and keeps trying for 48 hours. A full day thus goes through after midnight UTC.
+- A timeout, a 5xx, `RateLimited` or `DailyLimitReached` is tried again later. The job waits the seconds of `Retry-After`, or 1, 5, 15, 30 and then 60 minutes when there is none, and keeps trying for 48 hours, counted from the moment the job becomes available, so after any `delay()`. A full day thus goes through after midnight UTC.
 - Every try sends the same Idempotency-Key, fixed when the job is dispatched, so a retry never mails twice. With a `reference` the key is derived from the list, the address, the confirmation and the reference: dispatching the same booking twice signs up once.
-- Any other error is reported to your exception handler and fails the job, without a retry. So is a missing list id.
+- Any other error is reported to your exception handler and fails the job, without a retry. So is a missing token or list id, and a retryable error once the 48 hours are over.
 - The job never throws. On the `sync` queue a booking still goes through, but nothing is tried again; use a real queue in production.
 - The job is dispatched after the database transaction commits, so a booking that is rolled back signs no one up.
 
-After every successful answer the job fires `NickDeKruijk\ListMailing\Laravel\SignUpProcessed`, with `subscription`, `listId` and `result`. Listen for it to store the outcome, or to handle a suppressed address:
+The job fires two events, so your site can keep track:
+
+- `NickDeKruijk\ListMailing\Laravel\SignUpProcessed` after every successful answer, with `subscription`, `listId` and `result`. Also for `Suppressed`, see [A blocked address](#a-blocked-address).
+- `NickDeKruijk\ListMailing\Laravel\SignUpFailed` when the job gives up, with `subscription`, `listId` (null when none was set) and `exception`. Not when it only waits to try again.
 
 ```php
 use Illuminate\Support\Facades\Event;
-use Illuminate\Support\Facades\Mail;
-use NickDeKruijk\ListMailing\Confirmation;
-use NickDeKruijk\ListMailing\Laravel\ListMailing;
+use NickDeKruijk\ListMailing\Laravel\SignUpFailed;
 use NickDeKruijk\ListMailing\Laravel\SignUpProcessed;
-use NickDeKruijk\ListMailing\SubscribeOutcome;
 
 Event::listen(function (SignUpProcessed $event) {
-    if ($event->result->outcome !== SubscribeOutcome::Suppressed) {
-        return;
-    }
+    Booking::where('reference', $event->subscription->reference)
+        ->update(['newsletter' => $event->result->outcome->value]);
+});
 
-    $link = ListMailing::subscribe($event->subscription->withConfirmation(Confirmation::Link), $event->listId)->confirmationUrl;
-
-    if ($link !== null) {
-        Mail::to($event->subscription->email)->send(new ConfirmNewsletter($link));
-    }
+Event::listen(function (SignUpFailed $event) {
+    Booking::where('reference', $event->subscription->reference)
+        ->update(['newsletter' => 'failed']);
 });
 ```
 
@@ -196,10 +200,12 @@ return [
 ```
 
 ```blade
-<label>
-    <input type="checkbox" name="newsletter" value="1" @checked(old('newsletter'))>
-    {{ __('newsletter.consent') }}
-</label>
+@if (\NickDeKruijk\ListMailing\Laravel\ListMailing::configured())
+    <label>
+        <input type="checkbox" name="newsletter" value="1" @checked(old('newsletter'))>
+        {{ __('newsletter.consent') }}
+    </label>
+@endif
 ```
 
 Sign up after the booking is saved:
@@ -263,6 +269,79 @@ Mail::to($booking->email)->send(new BookingConfirmation($booking, $confirmationU
 
 `$confirmationUrl` stays null when the address is already on the list; then leave the button out.
 
+### A blocked address
+
+An address that made a spam complaint or bounced hard gets `Suppressed` with `Email` and with `None`: ListMailing sends it nothing, not even a confirmation. Only a confirmation link the customer clicks themselves lifts the block. With the job, handle it in a listener: ask for a link and send it in a mail of your own.
+
+```php
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Mail;
+use NickDeKruijk\ListMailing\Confirmation;
+use NickDeKruijk\ListMailing\Laravel\ListMailing;
+use NickDeKruijk\ListMailing\Laravel\SignUpProcessed;
+use NickDeKruijk\ListMailing\SubscribeOutcome;
+
+Event::listen(function (SignUpProcessed $event) {
+    if ($event->result->outcome !== SubscribeOutcome::Suppressed) {
+        return;
+    }
+
+    $link = ListMailing::subscribe($event->subscription->withConfirmation(Confirmation::Link), $event->listId)->confirmationUrl;
+
+    if ($link !== null) {
+        Mail::to($event->subscription->email)->send(new ConfirmNewsletter($link));
+    }
+});
+```
+
+With the link in your booking mail, as above, you never get `Suppressed`: the link already is the way back.
+
+## Example: your own confirmation, then single opt-in
+
+You can also confirm the sign-up yourself: send your own confirmation mail with a link to a page on your site, and only sign up once the customer has confirmed there. ListMailing then needs no confirmation of its own, so the sign-up goes with `Confirmation::None`. That needs single opt-in, which ListMailing enables on request; until then the job fails with `SingleOptInNotEnabled` and fires `SignUpFailed`.
+
+Let the link open a page with a button that posts, and sign up on the POST only. Many business mail servers open every link in a mail to scan it, so a link that signs up by itself would sign up people who never clicked.
+
+```php
+// routes/web.php
+Route::get('newsletter/confirm/{booking}', [NewsletterController::class, 'show'])
+    ->name('newsletter.confirm')->middleware('signed');
+Route::post('newsletter/confirm/{booking}', [NewsletterController::class, 'store'])
+    ->name('newsletter.confirm.store')->middleware('signed');
+```
+
+```php
+use NickDeKruijk\ListMailing\Confirmation;
+use NickDeKruijk\ListMailing\Laravel\SubscribeToList;
+use NickDeKruijk\ListMailing\Subscription;
+
+class NewsletterController
+{
+    public function show(Booking $booking)
+    {
+        return view('newsletter.confirm', ['booking' => $booking]);
+    }
+
+    public function store(Booking $booking)
+    {
+        SubscribeToList::dispatch(new Subscription(
+            email: $booking->email,
+            firstName: $booking->first_name,
+            locale: app()->getLocale(),
+            source: 'booking-confirm',
+            reference: $booking->reference,
+            consentedAt: now(),
+            consentText: __('newsletter.consent'),
+            confirmation: Confirmation::None,
+        ));
+
+        return view('newsletter.confirmed');
+    }
+}
+```
+
+The form on the confirm page posts to the same signed URL, for example `action="{{ URL::signedRoute('newsletter.confirm.store', $booking) }}"`. Send `consentedAt` as the moment of that click, and `consentText` as the sentence the customer agreed to. A blocked address still answers `Suppressed`: handle it as in [A blocked address](#a-blocked-address), with a link.
+
 ## Testing your site
 
 `ListMailing::fake()` puts a fake in place of the client. The job uses it too. Nothing is sent and every call is recorded:
@@ -301,7 +380,7 @@ ListMailing::fake()->respondWith(
 );
 ```
 
-Status lookups answer `NotSubscribed`, or what you pass to `statusWith()`. The asserts: `assertSubscribed($emailOrClosure, $listId = null)`, `assertNotSubscribed(...)`, `assertNothingSubscribed()`, `assertSubscribedTimes($times)` and `assertStatusChecked($email, $listId = null)`. `subscriptions()` returns every recorded sign-up. With the queue faked, use `Queue::assertPushed(SubscribeToList::class)` instead.
+Status lookups answer `NotSubscribed`, or what you pass to `statusWith()`. The asserts: `assertSubscribed($emailOrClosure, $listId = null)`, `assertNotSubscribed(...)`, `assertNothingSubscribed()`, `assertSubscribedTimes($times)` and `assertStatusChecked($email, $listId = null)`. `subscriptions()` returns every recorded sign-up. `ListMailing::configured()` only reads the config, also with the fake: set `listmailing.token` and `listmailing.list` in your tests when a view depends on it. With the queue faked, use `Queue::assertPushed(SubscribeToList::class)` instead.
 
 ## Tests
 
