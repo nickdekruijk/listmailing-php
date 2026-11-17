@@ -5,6 +5,12 @@ All notable changes to `nickdekruijk/listmailing-php` are documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-11-17
+
+### Changed
+
+- Guzzle 8 is supported next to Guzzle 7 (`guzzlehttp/guzzle: ^7.8|^8.0`). A project on Guzzle 8, such as one on Laravel 13 that already moved to it, could not install 0.1.1. The client works the same on both: every request option it sends has the type Guzzle 8 validates, and it catches `GuzzleException`, the base of every transfer failure in both versions.
+
 ## [0.1.1] - 2026-11-17
 
 ### Fixed
