@@ -60,3 +60,29 @@ it('gives a client with a shorter timeout through the facade', function () {
         ->and($client->defaultList)->toBe('default-list')
         ->and(app(ClientInterface::class)->timeout)->toBe(10.0);
 });
+
+it('falls back to 10 seconds on an empty or useless timeout', function (mixed $timeout, float $expected) {
+    config(['listmailing.timeout' => $timeout]);
+
+    expect(app(ClientInterface::class)->timeout)->toBe($expected);
+})->with([
+    'zero, from an empty LISTMAILING_TIMEOUT' => [0.0, 10.0],
+    'empty string' => ['', 10.0],
+    'negative' => [-5, 10.0],
+    'not a number' => ['soon', 10.0],
+    'null' => [null, 10.0],
+    'a number as a string' => ['3', 3.0],
+    'a float' => [2.5, 2.5],
+]);
+
+it('passes the fallback language from the config', function (mixed $locale, ?string $expected) {
+    config(['listmailing.locale' => $locale]);
+
+    expect(app(ClientInterface::class)->defaultLocale)->toBe($expected);
+})->with([
+    'en' => ['en', 'en'],
+    'with a region' => ['NL_nl', 'nl'],
+    'unknown' => ['de', null],
+    'empty' => ['', null],
+    'none' => [null, null],
+]);

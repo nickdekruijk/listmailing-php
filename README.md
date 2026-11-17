@@ -46,9 +46,9 @@ $result->subscriberId;    // null until the address is confirmed
 $result->confirmationUrl; // only with Confirmation::Link
 ```
 
-The constructor also takes `baseUrl` (default `https://listmailing.nl/api/v1`, only https is accepted), `timeout` in seconds (default 10) and `http`, your own Guzzle client. Pass a list id as the second argument of `subscribe()` and `status()` to use another list than the default.
+The constructor also takes `baseUrl` (default `https://listmailing.nl/api/v1`, only https is accepted), `timeout` in seconds (default 10, more than 0), `http`, your own Guzzle client, and `defaultLocale`. Pass a list id as the second argument of `subscribe()` and `status()` to use another list than the default.
 
-`locale` is the language of the confirmation mail. ListMailing knows `nl` and `en`. Variants such as `nl_NL`, `en-GB` or `EN` become `nl` or `en`; any other language, such as `de`, is left out, so ListMailing uses the language of your page. Passing `app()->getLocale()` is therefore safe on a site in any language.
+`locale` is the language of the confirmation mail. ListMailing knows `nl` and `en`. Variants such as `nl_NL`, `en-GB` or `EN` become `nl` or `en`; any other language, such as `de`, is left out, so ListMailing uses the language of your page. Passing `app()->getLocale()` is therefore safe on a site in any language. When the language of your page is not the one you want for such visitors, set `defaultLocale` (`nl` or `en`): it is sent whenever a sign-up has no language ListMailing knows.
 
 For a call a visitor waits on, `withTimeout()` gives a copy with a shorter timeout:
 
@@ -136,7 +136,8 @@ php artisan vendor:publish --tag=listmailing-config
 | `token` | `LISTMAILING_TOKEN` | |
 | `base_url` | `LISTMAILING_BASE_URL` | `https://listmailing.nl/api/v1` |
 | `list` | `LISTMAILING_LIST` | the default list |
-| `timeout` | `LISTMAILING_TIMEOUT` | `10` |
+| `timeout` | `LISTMAILING_TIMEOUT` | `10`, also when empty, 0 or not a number |
+| `locale` | `LISTMAILING_LOCALE` | none: the language of your page in ListMailing |
 | `queue` | `LISTMAILING_QUEUE` | the default queue |
 
 A missing token does not break your site: the client is built on first use, and only that call fails. `ListMailing::configured()` tells whether a token and a default list are set, so you can leave the newsletter box out where they are not, for example on a local copy:
@@ -254,6 +255,7 @@ The customer gets a confirmation mail from ListMailing. To put the confirmation 
 
 ```php
 use NickDeKruijk\ListMailing\Confirmation;
+use InvalidArgumentException;
 use NickDeKruijk\ListMailing\Exceptions\ListMailingException;
 use NickDeKruijk\ListMailing\Laravel\ListMailing;
 use NickDeKruijk\ListMailing\Laravel\SubscribeToList;
@@ -268,8 +270,10 @@ if ($request->boolean('newsletter')) {
             $subscription,
             idempotencyKey: SubscribeToList::idempotencyKey($subscription),
         )->confirmationUrl;
-    } catch (ListMailingException) {
-        // No link for the booking mail: ListMailing mails the confirmation itself.
+    } catch (ListMailingException|InvalidArgumentException) {
+        // No link for the booking mail: ListMailing mails the confirmation
+        // itself. InvalidArgumentException covers a missing token or list,
+        // which the job then reports instead of the booking breaking.
         SubscribeToList::dispatch($subscription->withConfirmation(Confirmation::Email));
     }
 }

@@ -334,3 +334,37 @@ describe('withTimeout', function () {
         client([])->withTimeout($seconds);
     })->throws(InvalidArgumentException::class, 'timeout')->with([0.0, -3.0]);
 });
+
+describe('defaultLocale', function () {
+    it('sends the fallback language when the sign-up has none it can use', function (?string $locale, string $sent) {
+        $client = client([json(201, ['status' => 'pending', 'subscriber_id' => null])], $history, defaultLocale: 'en');
+
+        $client->subscribe(new Subscription('anna@example.com', locale: $locale));
+
+        expect(json_decode((string) $history[0]['request']->getBody(), true)['locale'])->toBe($sent);
+    })->with([
+        'no language' => [null, 'en'],
+        'unknown language' => ['de', 'en'],
+        'its own language wins' => ['nl_NL', 'nl'],
+    ]);
+
+    it('normalizes the fallback language', function (?string $given, ?string $kept) {
+        expect((new Client('lm_test_token', defaultLocale: $given))->defaultLocale)->toBe($kept);
+    })->with([
+        ['EN-gb', 'en'],
+        ['de', null],
+        [null, null],
+    ]);
+
+    it('sends no language without a fallback', function () {
+        $client = client([json(201, ['status' => 'pending', 'subscriber_id' => null])], $history);
+
+        $client->subscribe(new Subscription('anna@example.com', locale: 'de'));
+
+        expect(json_decode((string) $history[0]['request']->getBody(), true))->not->toHaveKey('locale');
+    });
+
+    it('keeps the fallback language in a copy with a shorter timeout', function () {
+        expect((new Client('lm_test_token', defaultLocale: 'en'))->withTimeout(3)->defaultLocale)->toBe('en');
+    });
+});

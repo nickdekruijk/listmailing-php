@@ -19,12 +19,18 @@ class ServiceProvider extends BaseServiceProvider
             $config = $app->make('config');
             $baseUrl = $config->get('listmailing.base_url');
             $list = $config->get('listmailing.list');
+            $timeout = $config->get('listmailing.timeout');
+            $locale = $config->get('listmailing.locale');
 
             return new Client(
                 token: (string) $config->get('listmailing.token'),
                 baseUrl: is_string($baseUrl) && $baseUrl !== '' ? $baseUrl : Client::DEFAULT_BASE_URL,
                 defaultList: is_string($list) && $list !== '' ? $list : null,
-                timeout: (float) $config->get('listmailing.timeout', 10),
+                // An empty LISTMAILING_TIMEOUT, as copied from .env.example, is
+                // 0 after the cast in the config. The client refuses 0, which
+                // would stop every sign-up, so the config falls back instead.
+                timeout: is_numeric($timeout) && (float) $timeout > 0 ? (float) $timeout : Client::DEFAULT_TIMEOUT,
+                defaultLocale: is_string($locale) ? $locale : null,
             );
         });
     }

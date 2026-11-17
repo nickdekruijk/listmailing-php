@@ -18,13 +18,13 @@ pest()->extend(TestCase::class)->in('Laravel');
  * @param  list<Response|Throwable>  $responses
  * @param  array<int, array{request: RequestInterface, options: array<string, mixed>}>|null  $history
  */
-function client(array $responses, ?array &$history = null, ?string $defaultList = 'list-1'): Client
+function client(array $responses, ?array &$history = null, ?string $defaultList = 'list-1', ?string $defaultLocale = null): Client
 {
     $history = [];
     $stack = HandlerStack::create(new MockHandler($responses));
     $stack->push(Middleware::history($history));
 
-    return new Client('lm_test_token', 'https://listmailing.test/api/v1', $defaultList, 10.0, new GuzzleClient(['handler' => $stack]));
+    return new Client('lm_test_token', 'https://listmailing.test/api/v1', $defaultList, 10.0, new GuzzleClient(['handler' => $stack]), $defaultLocale);
 }
 
 /**

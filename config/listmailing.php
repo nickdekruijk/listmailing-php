@@ -20,8 +20,16 @@ return [
 
     /*
      * Seconds to wait for an answer. A job that times out tries again later.
+     * Empty, 0 or anything that is not a number uses the default of 10.
      */
     'timeout' => (float) env('LISTMAILING_TIMEOUT', 10),
+
+    /*
+     * nl or en: the language of the confirmation mail when a sign-up has
+     * none ListMailing knows, such as a visitor on the German version of
+     * your site. Null leaves it to the language of your page in ListMailing.
+     */
+    'locale' => env('LISTMAILING_LOCALE'),
 
     /*
      * The queue for SubscribeToList. Null uses the default queue.

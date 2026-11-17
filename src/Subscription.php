@@ -40,7 +40,7 @@ final readonly class Subscription
         public ?string $consentText = null,
         public ?Confirmation $confirmation = null,
     ) {
-        $this->locale = self::locale($locale);
+        $this->locale = self::normalizeLocale($locale);
         $this->consentedAt = $consentedAt === null ? null : DateTimeImmutable::createFromInterface($consentedAt);
     }
 
@@ -67,7 +67,7 @@ final readonly class Subscription
      * case, when it is nl or en. Anything else is null, so ListMailing
      * chooses the language of your page instead of refusing the sign-up.
      */
-    private static function locale(?string $locale): ?string
+    public static function normalizeLocale(?string $locale): ?string
     {
         $language = strtolower(trim(preg_split('/[-_]/', (string) $locale)[0] ?? ''));
 

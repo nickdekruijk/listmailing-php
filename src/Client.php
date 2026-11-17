@@ -31,8 +31,13 @@ final class Client implements ClientInterface
 {
     public const DEFAULT_BASE_URL = 'https://listmailing.nl/api/v1';
 
+    public const DEFAULT_TIMEOUT = 10.0;
+
     /** The base URL without a trailing slash. */
     public readonly string $baseUrl;
+
+    /** The language sent when a sign-up has none ListMailing knows, nl or en; null for the language of your page. */
+    public readonly ?string $defaultLocale;
 
     private readonly GuzzleClientInterface $http;
 
@@ -42,6 +47,7 @@ final class Client implements ClientInterface
      * @param  string|null  $defaultList  the list id used when a call names none
      * @param  float  $timeout  seconds to wait for an answer, more than 0
      * @param  GuzzleClientInterface|null  $http  for tests or a custom handler stack
+     * @param  string|null  $defaultLocale  nl or en, sent when a sign-up has no language of its own (or one ListMailing does not know); null leaves it to the language of your page
      *
      * @throws InvalidArgumentException on an empty token, a base URL that is not https or a timeout of 0 or less
      */
@@ -49,8 +55,9 @@ final class Client implements ClientInterface
         #[SensitiveParameter] private readonly string $token,
         string $baseUrl = self::DEFAULT_BASE_URL,
         public readonly ?string $defaultList = null,
-        public readonly float $timeout = 10.0,
+        public readonly float $timeout = self::DEFAULT_TIMEOUT,
         ?GuzzleClientInterface $http = null,
+        ?string $defaultLocale = null,
     ) {
         if (trim($token) === '') {
             throw new InvalidArgumentException('A ListMailing API token is required.');
@@ -65,6 +72,7 @@ final class Client implements ClientInterface
 
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->http = $http ?? new GuzzleClient;
+        $this->defaultLocale = Subscription::normalizeLocale($defaultLocale);
     }
 
     /**
@@ -77,7 +85,7 @@ final class Client implements ClientInterface
      */
     public function withTimeout(float $seconds): static
     {
-        return new self($this->token, $this->baseUrl, $this->defaultList, $seconds, $this->http);
+        return new self($this->token, $this->baseUrl, $this->defaultList, $seconds, $this->http, $this->defaultLocale);
     }
 
     /**
@@ -96,10 +104,15 @@ final class Client implements ClientInterface
     public function subscribe(Subscription $subscription, ?string $listId = null, ?string $idempotencyKey = null): SubscribeResult
     {
         $headers = $idempotencyKey === null || $idempotencyKey === '' ? [] : ['Idempotency-Key' => $idempotencyKey];
+        $body = $subscription->toArray();
+
+        if (! isset($body['locale']) && $this->defaultLocale !== null) {
+            $body['locale'] = $this->defaultLocale;
+        }
 
         $response = $this->send('POST', $this->path($listId), [
             'headers' => $headers,
-            'json' => $subscription->toArray(),
+            'json' => $body,
         ]);
 
         return SubscribeResult::fromResponse($this->decode($response), $response->getStatusCode());
@@ -125,6 +138,7 @@ final class Client implements ClientInterface
             'baseUrl' => $this->baseUrl,
             'defaultList' => $this->defaultList,
             'timeout' => $this->timeout,
+            'defaultLocale' => $this->defaultLocale,
         ];
     }
 
