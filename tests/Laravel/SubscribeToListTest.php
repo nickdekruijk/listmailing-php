@@ -161,6 +161,20 @@ it('derives the key from list, address, confirmation and reference', function ()
         ->and($key(booking(reference: null)))->not->toBe($key(booking(reference: null)));
 });
 
+it('derives the key the job sends when no list is given', function () {
+    $subscription = booking();
+
+    expect(SubscribeToList::idempotencyKey($subscription))->toBe(SubscribeToList::idempotencyKey($subscription, 'default-list'))
+        ->and(SubscribeToList::idempotencyKey($subscription))->toBe((new SubscribeToList($subscription))->idempotencyKey)
+        ->and(SubscribeToList::idempotencyKey($subscription, 'other-list'))->toBe((new SubscribeToList($subscription, 'other-list'))->idempotencyKey);
+});
+
+it('derives a key without a list in the config', function () {
+    config(['listmailing.list' => null]);
+
+    expect(SubscribeToList::idempotencyKey(booking()))->toBe(SubscribeToList::idempotencyKey(booking(), ''));
+});
+
 it('goes on the configured queue, after the commit', function () {
     Queue::fake();
     config(['listmailing.queue' => 'newsletter']);

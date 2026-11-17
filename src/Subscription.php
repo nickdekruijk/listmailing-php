@@ -12,11 +12,18 @@ use DateTimeInterface;
  */
 final readonly class Subscription
 {
+    /**
+     * nl or en, or null to let ListMailing use the language of your page.
+     * Any other language is null too: the API refuses it with a 422, and a
+     * sign-up should not get lost because a site runs in German.
+     */
+    public ?string $locale;
+
     /** When the box was ticked. */
     public ?DateTimeImmutable $consentedAt;
 
     /**
-     * @param  string|null  $locale  nl or en, the language of the confirmation mail
+     * @param  string|null  $locale  the language of the confirmation mail; nl_NL, en-GB and the like become nl or en, any other language becomes null
      * @param  string|null  $source  a short origin such as booking-form, at most 64 characters
      * @param  string|null  $reference  your own reference such as a booking number, at most 100 characters
      * @param  string|null  $consentText  the sentence next to the box, at most 1000 characters
@@ -26,13 +33,14 @@ final readonly class Subscription
         public string $email,
         public ?string $firstName = null,
         public ?string $lastName = null,
-        public ?string $locale = null,
+        ?string $locale = null,
         public ?string $source = null,
         public ?string $reference = null,
         ?DateTimeInterface $consentedAt = null,
         public ?string $consentText = null,
         public ?Confirmation $confirmation = null,
     ) {
+        $this->locale = self::locale($locale);
         $this->consentedAt = $consentedAt === null ? null : DateTimeImmutable::createFromInterface($consentedAt);
     }
 
@@ -52,6 +60,18 @@ final readonly class Subscription
             consentText: $this->consentText,
             confirmation: $confirmation,
         );
+    }
+
+    /**
+     * The language as the API takes it: the part before a - or _, in lower
+     * case, when it is nl or en. Anything else is null, so ListMailing
+     * chooses the language of your page instead of refusing the sign-up.
+     */
+    private static function locale(?string $locale): ?string
+    {
+        $language = strtolower(trim(preg_split('/[-_]/', (string) $locale)[0] ?? ''));
+
+        return in_array($language, ['nl', 'en'], true) ? $language : null;
     }
 
     /**

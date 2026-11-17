@@ -40,10 +40,10 @@ final class Client implements ClientInterface
      * @param  string  $token  the API token, starting with lm_
      * @param  string  $baseUrl  must be https
      * @param  string|null  $defaultList  the list id used when a call names none
-     * @param  float  $timeout  seconds to wait for an answer
+     * @param  float  $timeout  seconds to wait for an answer, more than 0
      * @param  GuzzleClientInterface|null  $http  for tests or a custom handler stack
      *
-     * @throws InvalidArgumentException on an empty token or a base URL that is not https
+     * @throws InvalidArgumentException on an empty token, a base URL that is not https or a timeout of 0 or less
      */
     public function __construct(
         #[SensitiveParameter] private readonly string $token,
@@ -61,8 +61,36 @@ final class Client implements ClientInterface
             throw new InvalidArgumentException('The ListMailing base URL must start with https://.');
         }
 
+        self::ensureTimeout($timeout);
+
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->http = $http ?? new GuzzleClient;
+    }
+
+    /**
+     * A copy that waits at most this many seconds for an answer, for a call
+     * a visitor waits on, such as asking for a confirmation link while a
+     * booking is saved. Not part of ClientInterface, so an implementation of
+     * its own does not break; ClientFake has it too.
+     *
+     * @throws InvalidArgumentException on 0 or less
+     */
+    public function withTimeout(float $seconds): static
+    {
+        return new self($this->token, $this->baseUrl, $this->defaultList, $seconds, $this->http);
+    }
+
+    /**
+     * Guzzle reads a timeout of 0 as no timeout at all, the opposite of what
+     * a short timeout is meant for.
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function ensureTimeout(float $seconds): void
+    {
+        if ($seconds <= 0) {
+            throw new InvalidArgumentException('The ListMailing timeout must be more than 0 seconds.');
+        }
     }
 
     public function subscribe(Subscription $subscription, ?string $listId = null, ?string $idempotencyKey = null): SubscribeResult

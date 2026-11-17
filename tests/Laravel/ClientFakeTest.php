@@ -78,3 +78,14 @@ it('fails its asserts', function (Closure $assert) {
     'times' => [fn ($fake) => $fake->assertSubscribedTimes(2)],
     'status checked' => [fn ($fake) => $fake->assertStatusChecked('anna@example.com')],
 ]);
+
+it('records calls made with a shorter timeout', function () {
+    ListMailing::withTimeout(3)->subscribe(new Subscription('anna@example.com'));
+
+    expect(ListMailing::withTimeout(3))->toBe($this->fake);
+    $this->fake->assertSubscribed('anna@example.com', 'default-list');
+});
+
+it('refuses a timeout of 0 on the fake too', function () {
+    ListMailing::withTimeout(0);
+})->throws(InvalidArgumentException::class, 'timeout');

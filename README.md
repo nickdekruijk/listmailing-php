@@ -48,6 +48,14 @@ $result->confirmationUrl; // only with Confirmation::Link
 
 The constructor also takes `baseUrl` (default `https://listmailing.nl/api/v1`, only https is accepted), `timeout` in seconds (default 10) and `http`, your own Guzzle client. Pass a list id as the second argument of `subscribe()` and `status()` to use another list than the default.
 
+`locale` is the language of the confirmation mail. ListMailing knows `nl` and `en`. Variants such as `nl_NL`, `en-GB` or `EN` become `nl` or `en`; any other language, such as `de`, is left out, so ListMailing uses the language of your page. Passing `app()->getLocale()` is therefore safe on a site in any language.
+
+For a call a visitor waits on, `withTimeout()` gives a copy with a shorter timeout:
+
+```php
+$result = $listMailing->withTimeout(3)->subscribe($subscription);
+```
+
 ### Outcomes
 
 `$result->outcome` is a `SubscribeOutcome`:
@@ -148,7 +156,9 @@ $result = ListMailing::subscribe($subscription);
 $status = ListMailing::status('anna@example.com');
 ```
 
-To inject the client, type-hint `NickDeKruijk\ListMailing\ClientInterface`, not `Client`, so the fake can take its place in tests.
+`ListMailing::withTimeout(3)->subscribe(...)` uses a shorter timeout for one call. The fake supports it too, and records the call as usual.
+
+To inject the client, type-hint `NickDeKruijk\ListMailing\ClientInterface`, not `Client`, so the fake can take its place in tests. `withTimeout()` is not part of that interface, so an implementation of your own does not have to add it; `Client` and the fake have it.
 
 ### The job
 
@@ -240,7 +250,7 @@ private function subscription(Booking $booking): Subscription
 }
 ```
 
-The customer gets a confirmation mail from ListMailing. To put the confirmation in your own booking mail instead, ask for a link. That needs the answer right away, so it is a direct call and not the job. Fall back to the job when it fails, so the booking mail still goes out:
+The customer gets a confirmation mail from ListMailing. To put the confirmation in your own booking mail instead, ask for a link. That needs the answer right away, so it is a direct call and not the job. Give it a short timeout, or the booking waits up to 10 seconds when ListMailing is slow, and fall back to the job when it fails, so the booking mail still goes out:
 
 ```php
 use NickDeKruijk\ListMailing\Confirmation;
@@ -254,9 +264,9 @@ if ($request->boolean('newsletter')) {
     $subscription = $this->subscription($booking)->withConfirmation(Confirmation::Link);
 
     try {
-        $confirmationUrl = ListMailing::subscribe(
+        $confirmationUrl = ListMailing::withTimeout(3)->subscribe(
             $subscription,
-            idempotencyKey: SubscribeToList::idempotencyKey($subscription, config('listmailing.list')),
+            idempotencyKey: SubscribeToList::idempotencyKey($subscription),
         )->confirmationUrl;
     } catch (ListMailingException) {
         // No link for the booking mail: ListMailing mails the confirmation itself.
@@ -267,11 +277,13 @@ if ($request->boolean('newsletter')) {
 Mail::to($booking->email)->send(new BookingConfirmation($booking, $confirmationUrl));
 ```
 
-`$confirmationUrl` stays null when the address is already on the list; then leave the button out.
+`$confirmationUrl` stays null when the address is already on the list; then leave the button out. `SubscribeToList::idempotencyKey()` without a list id uses `listmailing.list`, the same list the call goes to, and gives the key the job would send.
 
 ### A blocked address
 
 An address that made a spam complaint or bounced hard gets `Suppressed` with `Email` and with `None`: ListMailing sends it nothing, not even a confirmation. Only a confirmation link the customer clicks themselves lifts the block. With the job, handle it in a listener: ask for a link and send it in a mail of your own.
+
+The listener runs inside the job, so catch what it throws: an exception would fail a job whose sign-up already went through, and the job would be tried again until its retry period is over. Give the call a key of its own, so a repeat does not hand out a second link.
 
 ```php
 use Illuminate\Support\Facades\Event;
@@ -279,6 +291,7 @@ use Illuminate\Support\Facades\Mail;
 use NickDeKruijk\ListMailing\Confirmation;
 use NickDeKruijk\ListMailing\Laravel\ListMailing;
 use NickDeKruijk\ListMailing\Laravel\SignUpProcessed;
+use NickDeKruijk\ListMailing\Laravel\SubscribeToList;
 use NickDeKruijk\ListMailing\SubscribeOutcome;
 
 Event::listen(function (SignUpProcessed $event) {
@@ -286,10 +299,21 @@ Event::listen(function (SignUpProcessed $event) {
         return;
     }
 
-    $link = ListMailing::subscribe($event->subscription->withConfirmation(Confirmation::Link), $event->listId)->confirmationUrl;
+    $subscription = $event->subscription->withConfirmation(Confirmation::Link);
 
-    if ($link !== null) {
-        Mail::to($event->subscription->email)->send(new ConfirmNewsletter($link));
+    try {
+        $link = ListMailing::subscribe(
+            $subscription,
+            $event->listId,
+            SubscribeToList::idempotencyKey($subscription, $event->listId),
+        )->confirmationUrl;
+
+        if ($link !== null) {
+            Mail::to($subscription->email)->send(new ConfirmNewsletter($link));
+        }
+    } catch (Throwable $e) {
+        // Reported, not thrown: the sign-up itself went through.
+        report($e);
     }
 });
 ```

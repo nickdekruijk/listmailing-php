@@ -11,6 +11,7 @@ use NickDeKruijk\ListMailing\Subscription;
 /**
  * @method static SubscribeResult subscribe(Subscription $subscription, ?string $listId = null, ?string $idempotencyKey = null)
  * @method static StatusResult status(string $email, ?string $listId = null)
+ * @method static ClientInterface withTimeout(float $seconds) a copy with a shorter timeout, on Client and ClientFake only
  *
  * @see ClientInterface
  */

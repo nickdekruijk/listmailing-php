@@ -51,3 +51,12 @@ it('lets the facade use the default list', function () {
     $fake->assertStatusChecked('anna@example.com', 'default-list');
     expect(app(ClientInterface::class))->toBe($fake);
 });
+
+it('gives a client with a shorter timeout through the facade', function () {
+    $client = ListMailing::withTimeout(3);
+
+    expect($client)->toBeInstanceOf(Client::class)
+        ->and($client->timeout)->toBe(3.0)
+        ->and($client->defaultList)->toBe('default-list')
+        ->and(app(ClientInterface::class)->timeout)->toBe(10.0);
+});

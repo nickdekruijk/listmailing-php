@@ -57,6 +57,19 @@ class ClientFake implements ClientInterface
         return $this;
     }
 
+    /**
+     * Like Client::withTimeout(), but returns the fake itself, so the calls
+     * made on it show up in the asserts.
+     */
+    public function withTimeout(float $seconds): static
+    {
+        if ($seconds <= 0) {
+            throw new InvalidArgumentException('The ListMailing timeout must be more than 0 seconds.');
+        }
+
+        return $this;
+    }
+
     public function subscribe(Subscription $subscription, ?string $listId = null, ?string $idempotencyKey = null): SubscribeResult
     {
         $listId = $this->list($listId);

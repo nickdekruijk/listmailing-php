@@ -75,9 +75,14 @@ class SubscribeToList implements ShouldQueueAfterCommit
      * booking twice signs up once. ListMailing keeps keys per token, not per
      * list, which is why the list and the address are part of it. Without a
      * reference every dispatch gets a key of its own.
+     *
+     * @param  string|null  $listId  null uses config('listmailing.list'), as dispatch() does, so you get the key the job would send
      */
-    public static function idempotencyKey(Subscription $subscription, string $listId): string
+    public static function idempotencyKey(Subscription $subscription, ?string $listId = null): string
     {
+        $listId ??= config('listmailing.list');
+        $listId = is_string($listId) ? $listId : '';
+
         if ($subscription->reference === null || $subscription->reference === '') {
             return bin2hex(random_bytes(16));
         }

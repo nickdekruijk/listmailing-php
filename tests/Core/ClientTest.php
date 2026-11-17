@@ -304,7 +304,33 @@ describe('setup', function () {
         expect((new Client('lm_test_token', 'https://listmailing.test/api/v1/'))->baseUrl)->toBe('https://listmailing.test/api/v1');
     });
 
+    it('refuses a timeout of 0 or less', function (float $seconds) {
+        new Client('lm_test_token', timeout: $seconds);
+    })->throws(InvalidArgumentException::class, 'timeout')->with([0.0, -1.0]);
+
     it('keeps the token out of a dump', function () {
         expect(print_r(new Client('lm_secret_token'), true))->not->toContain('lm_secret_token');
     });
+});
+
+describe('withTimeout', function () {
+    it('gives a copy with a shorter timeout', function () {
+        $client = client([json(201, ['status' => 'pending', 'subscriber_id' => null])], $history);
+
+        $short = $client->withTimeout(3);
+        $short->subscribe(new Subscription('anna@example.com'));
+
+        expect($short)->not->toBe($client)
+            ->and($short->timeout)->toBe(3.0)
+            ->and($client->timeout)->toBe(10.0)
+            ->and($short->defaultList)->toBe('list-1')
+            ->and($short->baseUrl)->toBe('https://listmailing.test/api/v1')
+            ->and($history[0]['options']['timeout'])->toBe(3.0)
+            ->and($history[0]['options']['connect_timeout'])->toBe(3.0)
+            ->and($history[0]['request']->getHeaderLine('Authorization'))->toBe('Bearer lm_test_token');
+    });
+
+    it('refuses 0 or less', function (float $seconds) {
+        client([])->withTimeout($seconds);
+    })->throws(InvalidArgumentException::class, 'timeout')->with([0.0, -3.0]);
 });
